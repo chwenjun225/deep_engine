@@ -332,7 +332,6 @@ def parse_latest_tool_call(resp):
 def tool_exe(tool_name: str, tool_args: str) -> str:
 	"""Thực thi công cụ (tool execution) được LLM gọi."""
 	img_save_path = "./"
-	tokenizer = TOKENIZER
 	model = MODEL
 	if tool_name == "image_to_text":
 		# Giả lập thực thi công cụ image_to_text
@@ -394,14 +393,6 @@ def request_image_from_web(tool_args, img_save_path="./"):
 		else:
 			img = Image.open(img_path).convert('RGB')
 			return img 
-
-
-
-def token_counter(messages):
-	"""Đếm số lượng token từ danh sách tin nhắn."""
-	tokenizer = TOKENIZER
-	text = " ".join([msg.content for msg in messages])
-	return len(tokenizer.encode(text)) 
 
 
 
