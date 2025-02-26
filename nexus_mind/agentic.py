@@ -13,8 +13,6 @@
 
 
 import streamlit as st 
-from datetime import datetime 
-import tqdm
 import requests
 import json
 import json5
@@ -25,23 +23,15 @@ from io import BytesIO
 
 
 from pydantic import BaseModel, Field
-from transformers import (StoppingCriteria, StoppingCriteriaList, AutoTokenizer)
 
 
 
-from langchain.tools import StructuredTool 
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_core.prompts import ChatPromptTemplate
-from langchain_community.llms.fake import FakeStreamingListLLM
-from langchain_core.messages import (AIMessage, HumanMessage, ToolMessage)
+from langchain_core.prompts import PromptTemplate
+from langchain_ollama import ChatOllama
 
 
 
-idx=0
-
-
-
-# Constant vars 
 TOOLS = [
 	{
 		"name_for_human": "image_to_text", 
@@ -93,22 +83,22 @@ TOOLS = [
 
 
 FAKE_RESPONSES = [
-# "Hello, Good afternoon!", -- Fake resp id 0 -- No tool
+# Hello, Good afternoon! -- Fake resp id 0 -- No tool
 	"""
 	Thought: The input is a greeting. No tools are needed.
 	Final Answer: Hello! Good afternoon! How can I assist you today?
 	""", 
-# "Who is Jay Chou?", -- Fake resp id 1 -- No tool 
+# Who is Jay Chou? -- Fake resp id 1 -- No tool 
 	"""
 	Thought: The user is asking for information about Jay Chou. I should retrieve general knowledge.
 	Final Answer: Jay Chou is a Taiwanese singer, songwriter, and actor, widely known for his influence in Mandopop music. He has released numerous albums and is recognized for his unique blend of classical and contemporary music.
 	""", 
-# "Who is his wife?", -- Fake resp id 2 -- No tool 
+# Who is his wife, -- Fake resp id 2 -- No tool 
 	"""
 	Thought: The previous question was about Jay Chou. "His wife" likely refers to Jay Chou's spouse.
 	Final Answer: Jay Chou's wife is Hannah Quinlivan, an actress and model from Taiwan.
 	""", 
-# "Describe what is in this image, this is URL of the image: https://www.night_city_img.com", --> Fake resp id 3 -- Tool-use: image_to_text
+# Describe what is in this image, this is URL of the image: https://www.night_city_img.com --> Fake resp id 3 -- Tool-use: image_to_text
 	"""
 	Thought: The user wants a description of an image. I should use the image_to_text API.
 	Action: image_to_text
@@ -117,7 +107,7 @@ FAKE_RESPONSES = [
 	Thought: I now know the final answer.
 	Final Answer: The image depicts a vibrant cityscape at night, illuminated by neon lights and tall skyscrapers.
 	""",
-# "Draw me a cute kitten, preferably a black cat", -- Fake resp id 4 -- Tool-use: text_to_image
+# Draw me a cute kitten, preferably a black cat -- Fake resp id 4 -- Tool-use: text_to_image
 	"""
 	Thought: The user is requesting an image generation. I should use the text_to_image API.
 	Action: text_to_image
@@ -126,12 +116,12 @@ FAKE_RESPONSES = [
 	Thought: I now know the final answer.
 	Final Answer: Here is an image of a cute black kitten: [https://www.wenshengtu.com]
 	""", 
-# "Modify this description: 'A blue Honda car parked on the street' to 'A red Mazda car parked on the street'", -- Fake resp id 5 -- Tool-use: modify_text
+# Modify this description: 'A blue Honda car parked on the street' to 'A red Mazda car parked on the street' -- Fake resp id 5 -- Tool-use: modify_text
 	"""
 	Thought: The user wants to modify a text description. They want change from `A blue honda car parked on the street` to `A red Mazda car parked on the street`.
 	Final Answer: "A red Mazda car parked on the street."
 	""", 
-# "exit", -- Fake resp id 6 -- No tool	
+# exit -- Fake resp id 6 -- No tool	
 	"""Goodbye! Have a great day! 😊"""
 ]
 
@@ -141,26 +131,18 @@ DICT_FAKE_RESPONSES = {idx: fresp for idx, fresp in enumerate(FAKE_RESPONSES)}
 
 
 
-MODEL = FakeStreamingListLLM(responses=[""])
-
-
-
 EMBEDDING_MODEL = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
 
 
 
-TOKENIZER = AutoTokenizer.from_pretrained("google-bert/bert-base-uncased")
-
-
-
-TOOL_DESC = """{name_for_model}: Call this tool to interact with the {name_for_human} API. 
+TOOL_DESC = PromptTemplate.from_template("""{name_for_model}: Call this tool to interact with the {name_for_human} API. 
 What is the {name_for_human} API useful for? 
 {description_for_model}.
-Parameters: {parameters}"""
+Parameters: {parameters}""")
 
 
 
-PROMPT_REACT = """You are an AI assistant that follows the ReAct reasoning framework. 
+PROMPT_REACT = PromptTemplate.from_template("""You are an AI assistant that follows the ReAct reasoning framework. 
 You have access to the following APIs:
 
 {tools_desc}
@@ -175,49 +157,34 @@ Action: [Select from available tools: {tools_name}]
 Action Input: [Provide the required input]
 Observation: [Record the output from the action]
 ... (Repeat the Thought/Action/Observation loop as needed)
-Thought: I now know the final answer
+Final Thought: I now know the final answer
 Final Answer: [Provide the final answer]
 
 Begin!
 
-Question: {query}"""
+Question: {query}""")
+
+
+
+class AnswerWithReactOutput(BaseModel):
+	"""LLM cho ra output theo form ReAct nếu gặp query yêu cầu tư duy CoT."""
+	question: str
+	thought: str
+	action: str
+	action_input: str
+	observation: str
+	final_thought: str
+	final_answer: str
+
+
+
+MODEL = ChatOllama(model="llama3.2:1b-instruct-fp16", temperature=0.1, num_predict="1024")
 
 
 
 STOP_WORDS = ["Observation:", "Observation:\n"]
-
-
-
-class SequenceStoppingCriteria(StoppingCriteria):
-	"""Tùy chỉnh điều kiện dừng sinh chuỗi cho LLM."""
-	def __init__(self, sequence_ids):
-		self.sequence_ids = sequence_ids
-		self.current_sequence = []
-	def check_sequences(self, current_tokens, sequences):
-		"""
-		Kiểm tra các tokens được tạo có chứa một chuỗi ký tự lặp hay không.
-
-		:param current_tokens: 
-			Danh sách các tokens hiện đang được tạo.
-		:param sequences: 
-			Một danh sách chứa nhiều chuỗi ký tự lặp.
-		:return: 
-			Trả về True nếu chuỗi ký tự lặp nào xuất hiện trong current_token, nếu không thì trả về False.
-		"""
-		for i in range(len(current_tokens) - max(map(len, sequences)) + 1):
-			for seq in sequences:
-				if current_tokens[i:i+len(seq)] == seq:
-					return True
-		return False
-	def __call__(self, input_ids, scores, **kwargs):
-		# Nhận các tokens hiện tại đang được tạo.
-		current_tokens = [input_ids[-1][-1]]
-		# Kiểm tra các tokens liên tiếp có khớp với chuỗi dừng không
-		self.current_sequence.extend(current_tokens)
-		# Kiểm tra xem các mã thông báo hiện được tạo có chứa một chuỗi số liên tiếp cụ thể hay không
-		if self.check_sequences(self.current_sequence, self.sequence_ids):
-			return True  # Dừng tạo
-		return False
+# TODO: Nâng cấp từ traditional agent lên langgraph-agent 
+# TODO: https://learning.oreilly.com/library/view/learning-langchain/9781098167271/ch03.html
 
 
 
@@ -515,61 +482,3 @@ if __name__ == "__main__":
 	# 			idx=idx
 	# 		)
 	# 		print(f">>> 🤖 response:\n{response}\n")
-
-
-
-# def select_tools(state: State) -> State:
-# 	query = state["messages"][-1].content
-# 	tool_docs = tools_retriever.invoke(query)
-# 	return {"selected_tools": [doc.metadata["name"] for doc in tool_docs]}
-
-# def reflect(state: State) -> State:
-# 	class_map = {
-# 		AIMessage: HumanMessage, 
-# 		HumanMessage: AIMessage, 
-# 		ToolMessage: HumanMessage 
-# 	}
-# 	translated = [reflection_prompt, state["messages"][0]] + [
-# 		class_map[msg.__class__](content=msg.content) 
-# 		for msg in state["messages"][1:]
-# 	]
-# 	answer = model.invoke(translated)
-# 	return {"messages": [HumanMessage(content=answer.content)]}
-
-# def should_continue(state: State):
-# 	if len(state["messages"]) > 6:
-# 		return END
-# 	else:
-# 		return "reflect"
-
-# def chatbot(state: State) -> State:
-# 	selected_tools = [tool for tool in tools if tool.name in state["selected_tools"]]
-# 	answer = model.bind_tools(selected_tools).invoke([generate_prompt] + state["messages"])
-# 	return {"messages": [answer]}
-
-# def main():
-# 	"""Thực thi chương trình."""
-# 	builder = StateGraph(State)
-
-# 	builder.add_node("select_tools", select_tools)
-# 	builder.add_node("chatbot", chatbot)
-# 	builder.add_node("tools", ToolNode(tools))
-# 	builder.add_node("reflect", reflect)
-
-# 	builder.add_edge(START, "select_tools")
-# 	builder.add_edge("select_tools", "chatbot")
-# 	builder.add_conditional_edges("chatbot", tools_condition)
-# 	builder.add_edge("tools", "chatbot")
-# 	builder.add_conditional_edges("chatbot", should_continue)
-# 	builder.add_edge("reflect", "chatbot")
-	
-# 	graph = builder.compile(checkpointer=MemorySaver())
-
-# 	user_input = {
-# 		"messages": [HumanMessage("""What is Large Language Model?""")]
-# 	}
-# 	for chunk in graph.stream(user_input, config):
-# 		print(chunk)
-
-# if __name__ == "__main__":
-# 	fire.Fire(main)

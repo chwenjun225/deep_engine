@@ -62,3 +62,4 @@ model_structured_outptu = model.with_structured_output(AnswerWithJustification)
 resp = model_structured_outptu.invoke("""What weighs more, a pound of bricks or a pound of feathers""")
 
 print(resp)
+
